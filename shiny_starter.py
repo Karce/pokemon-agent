@@ -177,6 +177,8 @@ def main() -> int:
     total_frames = [0]
     start_time = time.monotonic()
 
+    seen_dvs: dict[tuple[int, int, int, int], int] = {}
+
     # -- low-level helpers --------------------------------------------------
 
     def tick(n: int = 1) -> None:
@@ -462,6 +464,16 @@ def main() -> int:
             # bail here and skip ~2350 frames of dialog/nickname work
             # per attempt.
             species, dvs = slot0_species_and_dvs()
+            dvs_tuple = (dvs.attack, dvs.defense, dvs.speed, dvs.special)
+            prev_attempt = seen_dvs.get(dvs_tuple)
+            if prev_attempt is None:
+                seen_dvs[dvs_tuple] = attempt
+            else:
+                print(
+                    f"  ⚠ RNG REPEAT: (ATK={dvs.attack}, DEF={dvs.defense}, "
+                    f"SPD={dvs.speed}, SPC={dvs.special}) "
+                    f"first seen at attempt {prev_attempt}, now at attempt {attempt}"
+                )
             shiny = is_shiny(dvs)
             atk_ok = MIN_ATK_DV <= dvs.attack <= MAX_ATK_DV
             target = shiny and atk_ok
