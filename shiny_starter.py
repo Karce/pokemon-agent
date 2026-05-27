@@ -19,6 +19,7 @@ Run with the project venv active:
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from pyboy import PyBoy
@@ -111,6 +112,13 @@ DIALOG_WAIT_MAX = 240
 # read of party_count returns garbage, check whether SVBK matches.
 ADDR_SVBK = 0xFF70
 
+# Per-run seed.  The save state captures Gen-2's 16-bit LFSR at the
+# moment of save, so every load_state() starts the RNG from the same
+# position.  mix_rng(attempt) varies attempts WITHIN a run, but without
+# a run-level seed, attempt 1 of every run produced identical DVs.
+# Seeding from time_ns() gives each run a different RNG starting point.
+RUN_SEED = time.time_ns() & 0xFFFF
+
 
 def main() -> int:
     if not STATE.exists():
@@ -129,6 +137,8 @@ def main() -> int:
         print(f"ERROR: SPEED must be 'FAST' or 'SLOW', got {SPEED!r}", file=sys.stderr)
         return 1
     slow = SPEED == "SLOW"
+
+    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {30 + (RUN_SEED % 20)} presses/attempt)")
 
     pyboy = PyBoy(str(ROM), window="SDL2")
     # FAST: 0 = unthrottled.  SLOW: 1 = real-time, so you can watch the
@@ -250,6 +260,26 @@ def main() -> int:
 
     # -- RNG mixing --------------------------------------------------------
 
+    def prime_rng_run() -> None:
+        """Burn 30-49 B/SELECT presses based on RUN_SEED to push the
+        RNG past the save state's frozen LFSR position.
+
+        The save state always restores the same RNG; without this burn,
+        mix_rng(attempt) sees the same starting state each run and
+        attempt N produces identical DVs across runs.  Because RUN_SEED
+        is fixed for the process lifetime, this burn produces the same
+        offset every load_state() within a run — variance across
+        attempts still comes from mix_rng(attempt) layered on top.
+        """
+        state = (RUN_SEED * 2654435761 + 1) & 0xFFFFFFFF
+        n_presses = 30 + (RUN_SEED % 20)  # 30..49 presses
+        for _ in range(n_presses):
+            state = (state * 1103515245 + 12345) & 0xFFFFFFFF
+            button = "b" if (state >> 17) & 1 else "select"
+            gap = 3 + ((state >> 8) & 0x07)
+            press(button, hold=A_HOLD, gap=gap)
+        dbg(f"prime_rng_run RUN_SEED=0x{RUN_SEED:04X} n_presses={n_presses}")
+
     def mix_rng(attempt: int) -> None:
         """Advance Gen-2's LFSR by pressing B/SELECT in a deterministic,
         attempt-derived pattern.
@@ -349,13 +379,18 @@ def main() -> int:
             attempt += 1
             frame_count[0] = 0
             load_state()
-            dbg(f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}) ===")
+            dbg(
+                f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}, "
+                f"RUN_SEED=0x{RUN_SEED:04X}) ==="
+            )
 
-            # Actively mix Gen-2's LFSR with attempt-derived B/SELECT
-            # presses.  The previous passive `tick(...)` jitter looked
-            # like it was randomising things but didn't — idle frames
-            # don't advance the RNG, so every run produced identical
-            # DVs.  See mix_rng() for the why.
+            # First, shift the RNG by a run-dependent amount so
+            # attempt 1 of this run does not collide with attempt 1 of
+            # any previous run.  See prime_rng_run() / RUN_SEED.
+            prime_rng_run()
+
+            # Then layer the attempt-derived mix on top.  This is what
+            # varies DVs WITHIN a single run.
             mix_rng(attempt)
 
             # Phase 1: Pokeball interact + "WANT THIS TOTODILE?" YES.
