@@ -72,11 +72,21 @@ DUMP_MEMORY = False
 # either harmless (no-op on a stable menu) or self-correct on the next
 # iteration of the outer loop.
 MAX_PRESSES_TO_PARTY_FILL = 80     # Pokeball interact + "want this?" YES
-# cry / "received TOTODILE" / "give a nickname?" YES — bumped from 4
-# because the original count never made it to the keyboard reliably
-# (cry + receive text + Y/N prompt = >4 advanceable beats in practice).
-PRESSES_PARTY_TO_KEYBOARD = 8
+# After party fill, the Totodile starter flow needs exactly:
+#   press 1-3:  advance cry / "received TOTODILE!" / Elm flavor text
+#   press 4:    YES on the "give a nickname?" Y/N menu → keyboard opens
+# Frame-level traces show the keyboard is ready by the end of press 4.
+# Any *additional* A-press lands on the keyboard with the cursor still
+# at (0,0)='A' and types a stray 'A' — that's where "AAAAKIWI" came
+# from when this used to be 8.
+PRESSES_PARTY_TO_KEYBOARD = 4
 PRESSES_POST_NICKNAME = 60         # Elm's "TOTODILE, eh?  ..." chain
+
+# After the YES press that opens the keyboard, give the game a beat to
+# render the keyboard before type_kiwi() starts pushing the D-pad — the
+# first move is otherwise eaten by the transition and the cursor stays
+# at (0,0), making the first letter come out wrong.
+KEYBOARD_OPEN_SETTLE = 45
 
 # Input timing.
 A_HOLD = 3
@@ -347,8 +357,11 @@ def main() -> int:
             if DUMP_MEMORY:
                 dump_diagnostic("party_count > 0")
 
-            # Phase 2: advance past the cry / "received TOTODILE" text and
-            # confirm YES on the nickname Y/N, landing on the keyboard.
+            # Phase 2: advance past the cry / "received TOTODILE" text
+            # and Elm flavor lines, then press YES on the nickname Y/N
+            # menu so the keyboard opens.  Exactly PRESSES_PARTY_TO_KEYBOARD
+            # presses — see that constant's comment for why over-pressing
+            # here is what was causing "AAAAKIWI".
             for i in range(PRESSES_PARTY_TO_KEYBOARD):
                 dbg(
                     f"phase2 press={i:>2} "
@@ -356,6 +369,10 @@ def main() -> int:
                     f"txt=0x{read_u8(ADDR_TEXT_DELAY):02X}"
                 )
                 press_a_when_ready()
+            # The final press above is the YES on the Y/N menu, which
+            # opens the keyboard.  Give it time to fully render before
+            # type_kiwi() starts mashing the D-pad.
+            tick(KEYBOARD_OPEN_SETTLE)
 
             # Phase 3: type KIWI and press START to confirm.
             dbg("phase3 type_kiwi")
