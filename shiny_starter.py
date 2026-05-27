@@ -154,7 +154,7 @@ def main() -> int:
         return 1
     slow = SPEED == "SLOW"
 
-    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {15 + (RUN_SEED % 10)} presses/attempt)")
+    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {5 + (RUN_SEED % 5)} presses/attempt)")
     print(
         f"Hunting shiny Totodile with ATK DV in "
         f"[{MIN_ATK_DV}, {MAX_ATK_DV}]  (HEADLESS={HEADLESS}, SPEED={SPEED})"
@@ -305,7 +305,7 @@ def main() -> int:
         attempts still comes from mix_rng(attempt) layered on top.
         """
         state = (RUN_SEED * 2654435761 + 1) & 0xFFFFFFFF
-        n_presses = 15 + (RUN_SEED % 10)  # 15..24 presses
+        n_presses = 5 + (RUN_SEED % 5)  # 5..9 presses
         for _ in range(n_presses):
             state = (state * 1103515245 + 12345) & 0xFFFFFFFF
             button = "b" if (state >> 17) & 1 else "select"
@@ -331,7 +331,7 @@ def main() -> int:
         index.
         """
         state = (attempt * 2654435761 + 1) & 0xFFFFFFFF
-        n_presses = 6 + (attempt % 9)  # 6..14 presses
+        n_presses = 3 + (attempt % 5)  # 3..7 presses
         for _ in range(n_presses):
             state = (state * 1103515245 + 12345) & 0xFFFFFFFF
             button = "b" if (state >> 17) & 1 else "select"
