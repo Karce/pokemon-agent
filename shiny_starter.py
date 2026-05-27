@@ -121,6 +121,9 @@ POST_NICKNAME_SETTLE = 60
 # Max frames to wait for dialog to become input-ready before forcing a press.
 DIALOG_WAIT_MAX = 240
 
+# Print a throughput line every N attempts.
+THROUGHPUT_INTERVAL = 100
+
 # WRAM bank register (GBC). Bank 1 holds most Gen-2 game state; if a
 # read of party_count returns garbage, check whether SVBK matches.
 ADDR_SVBK = 0xFF70
@@ -165,6 +168,10 @@ def main() -> int:
     # Per-attempt frame counter, reset each load_state().  Used only to
     # tag debug lines so timing between events is visible.
     frame_count = [0]
+    # Cumulative frame counter across all attempts; never reset.  Drives
+    # the throughput report.
+    total_frames = [0]
+    start_time = time.monotonic()
 
     # -- low-level helpers --------------------------------------------------
 
@@ -173,6 +180,7 @@ def main() -> int:
             if not pyboy.tick():
                 sys.exit(0)
             frame_count[0] += 1
+            total_frames[0] += 1
 
     def press(button: str, hold: int = A_HOLD, gap: int = PRESS_GAP) -> None:
         pyboy.button_press(button)
@@ -466,6 +474,16 @@ def main() -> int:
                 f"{status}"
             )
 
+            if attempt % THROUGHPUT_INTERVAL == 0:
+                elapsed = time.monotonic() - start_time
+                rate = attempt / elapsed if elapsed > 0 else 0.0
+                avg_frames = total_frames[0] / attempt
+                print(
+                    f"[{attempt}] rate: {rate:.2f} attempts/sec, "
+                    f"{avg_frames:.0f} frames/attempt, "
+                    f"running {attempt} attempts total"
+                )
+
             if species != TOTODILE_ID:
                 print(
                     f"  └─ wrong species; expected Totodile ({TOTODILE_ID})",
@@ -512,6 +530,9 @@ def main() -> int:
 
             nick = slot0_nickname()
 
+            elapsed = time.monotonic() - start_time
+            avg_rate = attempt / elapsed if elapsed > 0 else 0.0
+
             print()
             print("=" * 60)
             print(f"  ✨  SHINY TOTODILE  ✨   on attempt {attempt}")
@@ -520,6 +541,9 @@ def main() -> int:
                 f"SPD={dvs.speed}  SPC={dvs.special}"
             )
             print(f"  Nickname: {nick!r}")
+            print(f"  Total attempts: {attempt}")
+            print(f"  Total elapsed:  {elapsed:.1f}s")
+            print(f"  Avg rate:       {avg_rate:.2f} attempts/sec")
             print("=" * 60)
             print()
 
