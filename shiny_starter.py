@@ -146,6 +146,21 @@ ADDR_SVBK = 0xFF70
 ADDR_H_RANDOM_ADD = 0xFFD9
 ADDR_H_RANDOM_SUB = 0xFFDA
 
+# Game Boy hardware divider register.  Increments at 16384 Hz (independent
+# of CPU stalls), so any per-attempt timing variability is visible here.
+# Gen-2's Random() mixes rDIV into hRandomAdd/hRandomSub on every call —
+# if rDIV is constant across attempts the DVs are too, even with distinct
+# (add, sub) seeds.
+ADDR_DIV = 0xFF04
+
+# Minimal per-attempt jitter (frames) injected after load_state() before
+# we issue the first input.  This was previously provided implicitly by
+# mix_rng()'s variable-length B/SELECT bursts; without it every attempt
+# hits the first Random() call at an identical rDIV phase and the DVs
+# stop varying even when (add, sub) does.  Small modulus keeps cost
+# negligible (~16 frames worst case).
+JITTER_MOD = 17
+
 # (add, sub) iteration parameters.  We walk the 16-bit space (add * 256
 # + sub) by a stride coprime to 65536 so consecutive attempts land at
 # well-separated points — useful because adjacent (add, sub) inputs
@@ -321,23 +336,39 @@ def main() -> int:
 
     # -- RNG direct manipulation -------------------------------------------
 
-    def read_rng() -> tuple[int, int]:
-        """Read the current (hRandomAdd, hRandomSub) from HRAM."""
+    def rng_snapshot() -> tuple[int, int, int]:
+        """Read (hRandomAdd, hRandomSub, rDIV) — full Random()-input state."""
         return (
             read_u8(ADDR_H_RANDOM_ADD),
             read_u8(ADDR_H_RANDOM_SUB),
+            read_u8(ADDR_DIV),
         )
 
-    def write_rng(add_val: int, sub_val: int) -> None:
-        """Overwrite Gen-2's RNG state in HRAM.
+    def write_rng(add_val: int, sub_val: int) -> tuple[int, int, int, bool]:
+        """Overwrite Gen-2's RNG state in HRAM, verify, return readback.
 
         The next call to the game's Random routine will mix rDIV into
-        these bytes and the result becomes a DV nibble pair.  By
-        picking distinct (add, sub) on every attempt we sweep DV space
-        without any input mashing.
+        these bytes and the result becomes a DV nibble pair.  By picking
+        distinct (add, sub) on every attempt we sweep DV space without
+        any input mashing.
+
+        We read the bytes back immediately to confirm the write stuck —
+        if pyboy.memory[] writes to HRAM are being clobbered (e.g. by a
+        pending VBlank handler) we want to know.  Returns
+        (got_add, got_sub, got_div, stuck).
         """
-        pyboy.memory[ADDR_H_RANDOM_ADD] = add_val & 0xFF
-        pyboy.memory[ADDR_H_RANDOM_SUB] = sub_val & 0xFF
+        want_add, want_sub = add_val & 0xFF, sub_val & 0xFF
+        pyboy.memory[ADDR_H_RANDOM_ADD] = want_add
+        pyboy.memory[ADDR_H_RANDOM_SUB] = want_sub
+        got_add, got_sub, got_div = rng_snapshot()
+        if (got_add, got_sub) != (want_add, want_sub):
+            # Second attempt — same write, in case the first one raced
+            # something.  Re-snapshot regardless of outcome so callers
+            # see ground truth.
+            pyboy.memory[ADDR_H_RANDOM_ADD] = want_add
+            pyboy.memory[ADDR_H_RANDOM_SUB] = want_sub
+            got_add, got_sub, got_div = rng_snapshot()
+        return got_add, got_sub, got_div, (got_add, got_sub) == (want_add, want_sub)
 
     def attempt_to_rng(attempt: int) -> tuple[int, int]:
         """Map a 1-based attempt index to a unique (add, sub) pair.
@@ -422,13 +453,18 @@ def main() -> int:
             attempt += 1
             frame_count[0] = 0
             load_state()
+            # Per-attempt jitter so the rDIV phase at the first Random()
+            # call varies even though (add, sub) are deterministic.
+            # save_state captures rDIV, so without this every attempt
+            # would see identical rDIV at the same in-game cycle.
+            tick(attempt % JITTER_MOD)
             rng_add, rng_sub = attempt_to_rng(attempt)
             # Overwrite hRandomAdd/hRandomSub *after* load_state has
             # settled (the tick(4) in load_state() lets any pending
             # post-load init run).  The next in-game Random call will
             # mix rDIV into these bytes and the result becomes the
             # ATK/DEF and SPD/SPC DV nibbles.
-            write_rng(rng_add, rng_sub)
+            got_add, got_sub, div_at_write, stuck = write_rng(rng_add, rng_sub)
             dbg(
                 f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}, "
                 f"HEADLESS={HEADLESS}, "
@@ -459,6 +495,12 @@ def main() -> int:
                 continue
             if DUMP_MEMORY:
                 dump_diagnostic("party_count > 0")
+
+            # Snapshot RNG state at the moment the DVs are visible.
+            # Compared against (got_add, got_sub, div_at_write) on the
+            # status line below, this proves whether (a) our HRAM write
+            # stuck, and (b) rDIV is actually advancing between attempts.
+            add_at_dv, sub_at_dv, div_at_dv = rng_snapshot()
 
             # Early DV check — party slot 0 (species + DVs) is finalised
             # the instant party_count flips to 1, well before Elm's
@@ -491,11 +533,22 @@ def main() -> int:
                 status = f"*** SHINY (ATK {dvs.attack} outside [{MIN_ATK_DV},{MAX_ATK_DV}]) ***"
             else:
                 status = "not shiny"
+            # rng trace:
+            #   w=AB:CD→GH:IJ  values we wrote → values read back at write time
+            #   (a trailing '!' means the write didn't stick — bug 1 evidence)
+            #   d_w=XX          rDIV at write time
+            #   r=KL:MN d_r=YY  values + rDIV right before DV read
+            stuck_mark = "" if stuck else "!"
+            rng_trace = (
+                f"w=0x{rng_add:02X}{rng_sub:02X}→0x{got_add:02X}{got_sub:02X}{stuck_mark} "
+                f"d_w=0x{div_at_write:02X}  "
+                f"r=0x{add_at_dv:02X}{sub_at_dv:02X} d_r=0x{div_at_dv:02X}"
+            )
             print(
                 f"[{attempt:>4}] {species_name:>10}  "
                 f"ATK={dvs.attack:2d} DEF={dvs.defense:2d} "
                 f"SPD={dvs.speed:2d} SPC={dvs.special:2d}  "
-                f"{status}"
+                f"[{rng_trace}]  {status}"
             )
 
             if attempt % THROUGHPUT_INTERVAL == 0:
