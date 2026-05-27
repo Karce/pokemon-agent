@@ -60,8 +60,21 @@ TOTODILE_ID = 158
 #            region whenever party_count first becomes > 0, and also on
 #            phase-1 timeout. Pairs well with SLOW for diagnosing the
 #            "party never fills" failure.
+# HEADLESS:
+#   True   — window="null"; no SDL2 window, no rendering work, MUCH
+#            faster at emulation_speed=0.  Recommended for farming.
+#   False  — window="SDL2"; visible window for debugging.
 SPEED = "SLOW"
 DUMP_MEMORY = True
+HEADLESS = True
+
+# ── Shiny target filter ────────────────────────────────────────────────
+# Only accept a shiny whose ATK DV falls in [MIN_ATK_DV, MAX_ATK_DV].
+# Gen-2 shinies require DEF=SPD=SPC=10 and ATK ∈ {2,3,6,7,10,11,14,15};
+# of those, 14 and 15 are the highest-ATK shinies.  Tighten this range
+# to keep hunting for a better roll than a previously-found shiny.
+MIN_ATK_DV = 14
+MAX_ATK_DV = 15
 
 # Bounds for each phase.  These are pressed-with-dialog-aware-waits, so
 # a "press" here means "wait for joy_lock to clear, then tap A".  Counts
@@ -139,8 +152,12 @@ def main() -> int:
     slow = SPEED == "SLOW"
 
     print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {30 + (RUN_SEED % 20)} presses/attempt)")
+    print(
+        f"Hunting shiny Totodile with ATK DV in "
+        f"[{MIN_ATK_DV}, {MAX_ATK_DV}]  (HEADLESS={HEADLESS}, SPEED={SPEED})"
+    )
 
-    pyboy = PyBoy(str(ROM), window="SDL2")
+    pyboy = PyBoy(str(ROM), window="null" if HEADLESS else "SDL2")
     # FAST: 0 = unthrottled.  SLOW: 1 = real-time, so you can watch the
     # game and the debug stream side-by-side.
     pyboy.set_emulation_speed(0 if not slow else 1)
@@ -381,7 +398,8 @@ def main() -> int:
             load_state()
             dbg(
                 f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}, "
-                f"RUN_SEED=0x{RUN_SEED:04X}) ==="
+                f"HEADLESS={HEADLESS}, RUN_SEED=0x{RUN_SEED:04X}, "
+                f"ATK target [{MIN_ATK_DV},{MAX_ATK_DV}]) ==="
             )
 
             # First, shift the RNG by a run-dependent amount so
@@ -431,13 +449,21 @@ def main() -> int:
             # per attempt.
             species, dvs = slot0_species_and_dvs()
             shiny = is_shiny(dvs)
+            atk_ok = MIN_ATK_DV <= dvs.attack <= MAX_ATK_DV
+            target = shiny and atk_ok
             species_name = SPECIES_NAMES.get(species, f"???({species})")
 
+            if target:
+                status = "*** TARGET SHINY ***"
+            elif shiny:
+                status = f"*** SHINY (ATK {dvs.attack} outside [{MIN_ATK_DV},{MAX_ATK_DV}]) ***"
+            else:
+                status = "not shiny"
             print(
                 f"[{attempt:>4}] {species_name:>10}  "
                 f"ATK={dvs.attack:2d} DEF={dvs.defense:2d} "
                 f"SPD={dvs.speed:2d} SPC={dvs.special:2d}  "
-                f"{'*** SHINY ***' if shiny else 'not shiny'}"
+                f"{status}"
             )
 
             if species != TOTODILE_ID:
@@ -447,7 +473,7 @@ def main() -> int:
                 )
                 continue
 
-            if not shiny:
+            if not target:
                 continue
 
             # ── Shiny found — finish the dialog so the saved state is
@@ -500,10 +526,16 @@ def main() -> int:
             with open(SHINY_STATE, "wb") as f:
                 pyboy.save_state(f)
             print(f"Saved shiny state to {SHINY_STATE}")
-            print("Window stays open.  Close it (or Ctrl+C) to exit.")
-
-            while pyboy.tick():
-                pass
+            if HEADLESS:
+                print(
+                    "HEADLESS run — no window to admire.  To view your shiny:"
+                )
+                print(f"  cp {SHINY_STATE} {STATE.with_suffix('.state1')}")
+                print("  python play.py   # then Shift+L (or your load key) to load slot 1")
+            else:
+                print("Window stays open.  Close it (or Ctrl+C) to exit.")
+                while pyboy.tick():
+                    pass
             return 0
 
     except KeyboardInterrupt:
