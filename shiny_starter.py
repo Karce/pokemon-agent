@@ -91,13 +91,13 @@ MAX_PRESSES_TO_PARTY_FILL = 80     # Pokeball interact + "want this?" YES
 # at (0,0)='A' and types a stray 'A' — that's where "AAAAKIWI" came
 # from when this used to be 8.
 PRESSES_PARTY_TO_KEYBOARD = 4
-PRESSES_POST_NICKNAME = 60         # Elm's "TOTODILE, eh?  ..." chain
+PRESSES_POST_NICKNAME = 40         # Elm's "TOTODILE, eh?  ..." chain
 
 # After the YES press that opens the keyboard, give the game a beat to
 # render the keyboard before type_kiwi() starts pushing the D-pad — the
 # first move is otherwise eaten by the transition and the cursor stays
 # at (0,0), making the first letter come out wrong.
-KEYBOARD_OPEN_SETTLE = 45
+KEYBOARD_OPEN_SETTLE = 20
 
 # Input timing.
 A_HOLD = 3
@@ -105,14 +105,14 @@ A_HOLD = 3
 # 3 frames was unreliable and the cursor stayed at (0,0) on the
 # naming screen, producing "AAAA" every attempt.
 DPAD_HOLD = 10
-PRESS_GAP = 8
+PRESS_GAP = 4
 
 # Minimum frames between consecutive presses, even when the dialog
 # detector says the coast is clear.  Stops the script from mashing A
 # faster than the game can update WRAM (cry animation, party-fill, etc.)
 # and prevents the "joy_lock=0 forever, press every 11 frames" failure
 # mode observed on Gold US.
-MIN_PRESS_INTERVAL = 16
+MIN_PRESS_INTERVAL = 10
 
 # Extra settle frames after the nickname is confirmed with START.
 # Elm's "TOTODILE, eh?" chain takes a moment to begin and the party
@@ -386,7 +386,7 @@ def main() -> int:
     # Frames to wait between releasing one D-pad direction and pressing
     # the next.  PRESS_GAP (8) was empirically too tight on the Gen-2
     # naming keyboard.
-    DPAD_GAP = 12
+    DPAD_GAP = 7
 
     def move_cursor(dr: int, dc: int) -> None:
         for _ in range(dr):
