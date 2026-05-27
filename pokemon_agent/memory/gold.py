@@ -28,28 +28,31 @@ from pokemon_agent.memory.reader import GameMemoryReader
 # ===================================================================
 # RAM addresses (WRAM) — Pokemon Gold (US)
 # ===================================================================
+# All addresses below were verified against the pret/pokegold symbols
+# branch (pokegold.sym). Crystal uses different offsets — do not
+# cross-reference pokecrystal here.
 
-# -- Player block (wPlayerData ~ $D470) --
-ADDR_PLAYER_ID     = 0xD47B   # 2 bytes BE (wPlayerID)
-ADDR_PLAYER_NAME   = 0xD47D   # 11 bytes (wPlayerName)
-ADDR_RIVAL_NAME    = 0xD493   # 11 bytes (wRivalName)
-ADDR_MONEY         = 0xD84E   # 3 bytes BCD BE (wMoney)
-ADDR_JOHTO_BADGES  = 0xD857   # 1 byte bitmask (wJohtoBadges)
-ADDR_KANTO_BADGES  = 0xD858   # 1 byte bitmask (wKantoBadges)
+# -- Player block (wPlayerData) --
+ADDR_PLAYER_ID     = 0xD1A1   # 2 bytes BE (wPlayerID)
+ADDR_PLAYER_NAME   = 0xD1A3   # 11 bytes (wPlayerName)
+ADDR_RIVAL_NAME    = 0xD1B9   # 11 bytes (wRivalName)
+ADDR_MONEY         = 0xD573   # 3 bytes BCD BE (wMoney)
+ADDR_JOHTO_BADGES  = 0xD57C   # 1 byte bitmask (wJohtoBadges)
+ADDR_KANTO_BADGES  = 0xD57D   # 1 byte bitmask (wKantoBadges)
 
 # -- Map / position --
-ADDR_MAP_GROUP     = 0xDA00   # current map group
-ADDR_MAP_NUMBER    = 0xDA01   # current map number within group
-ADDR_PLAYER_Y      = 0xDCB7   # wYCoord
-ADDR_PLAYER_X      = 0xDCB8   # wXCoord
-ADDR_PLAYER_DIR    = 0xDCB9   # wPlayerDirection (0=down,4=up,8=left,0xC=right)
+ADDR_MAP_GROUP     = 0xDA00   # current map group (wMapGroup)
+ADDR_MAP_NUMBER    = 0xDA01   # current map number within group (wMapNumber)
+ADDR_PLAYER_Y      = 0xDA02   # wYCoord
+ADDR_PLAYER_X      = 0xDA03   # wXCoord
+ADDR_PLAYER_DIR    = 0xD205   # wPlayerDirection (0=down,4=up,8=left,0xC=right)
 
 # -- Party --
-ADDR_PARTY_COUNT   = 0xDCD7   # wPartyCount
-ADDR_PARTY_SPECIES = 0xDCD8   # 6 bytes + 0xFF terminator
-ADDR_PARTY_MON1    = 0xDCDF   # 48 bytes × 6
-ADDR_PARTY_OTS     = 0xDDFF   # 11 bytes × 6
-ADDR_PARTY_NICKS   = 0xDE41   # 11 bytes × 6
+ADDR_PARTY_COUNT   = 0xDA22   # wPartyCount
+ADDR_PARTY_SPECIES = 0xDA23   # 6 bytes + 0xFF terminator (wPartySpecies)
+ADDR_PARTY_MON1    = 0xDA2A   # 48 bytes × 6 (wPartyMon1)
+ADDR_PARTY_OTS     = 0xDB4A   # 11 bytes × 6 (wPartyMonOTs)
+ADDR_PARTY_NICKS   = 0xDB8C   # 11 bytes × 6 (wPartyMonNicknames)
 
 PARTY_MON_SIZE     = 0x30     # 48 bytes per party slot
 NAME_SIZE          = 11
@@ -99,20 +102,20 @@ PARTYMON_OFF_SPC_ATK   = 0x2C
 PARTYMON_OFF_SPC_DEF   = 0x2E
 
 # -- Bag (Item Pocket only — Gen 2 has separate balls/key items/TM pockets) --
-ADDR_NUM_ITEMS     = 0xD892   # wNumItems
-ADDR_ITEMS         = 0xD893   # (item, qty) pairs, 0xFF terminator
+ADDR_NUM_ITEMS     = 0xD5B7   # wNumItems
+ADDR_ITEMS         = 0xD5B8   # (item, qty) pairs, 0xFF terminator
 
-ADDR_NUM_KEY_ITEMS = 0xD8BC   # wNumKeyItems (key items have no qty)
-ADDR_KEY_ITEMS     = 0xD8BD
+ADDR_NUM_KEY_ITEMS = 0xD5E1   # wNumKeyItems (key items have no qty)
+ADDR_KEY_ITEMS     = 0xD5E2
 
-ADDR_NUM_BALLS     = 0xD8D7   # wNumBalls
-ADDR_BALLS         = 0xD8D8
+ADDR_NUM_BALLS     = 0xD5FC   # wNumBalls
+ADDR_BALLS         = 0xD5FD
 
 # -- Battle --
 # wBattleMode: 0=none, 1=wild, 2=trainer
 # wBattleType: 0=normal, 1=can_lose, 2=debug, ... up to ~10 (legendary/shiny/etc)
-ADDR_BATTLE_MODE   = 0xD22D
-ADDR_BATTLE_TYPE   = 0xD230
+ADDR_BATTLE_MODE   = 0xD116
+ADDR_BATTLE_TYPE   = 0xD119
 
 # BattleMon (active enemy in battle) struct: ~28 bytes.
 # Layout (BattleMon, no exp/EVs):
@@ -132,7 +135,7 @@ ADDR_BATTLE_TYPE   = 0xD230
 #   0x18-0x19 speed (BE)
 #   0x1A-0x1B spc atk (BE)
 #   0x1C-0x1D spc def (BE)
-ADDR_ENEMY_MON           = 0xD0ED   # wEnemyMon (BattleMon struct base)
+ADDR_ENEMY_MON           = 0xD0EF   # wEnemyMon (BattleMon struct base)
 ENEMY_MON_OFF_SPECIES    = 0x00
 ENEMY_MON_OFF_ITEM       = 0x01
 ENEMY_MON_OFF_MOVES      = 0x02
@@ -151,21 +154,26 @@ ADDR_ENEMY_MAX_HP  = ADDR_ENEMY_MON + ENEMY_MON_OFF_MAX_HP
 ADDR_ENEMY_STATUS  = ADDR_ENEMY_MON + ENEMY_MON_OFF_STATUS
 
 # -- Dialog / input lock --
-ADDR_TEXT_DELAY    = 0xC2C6   # wTextDelayFrames — nonzero while text scrolling
-ADDR_JOY_LOCK      = 0xD730   # bit 5 = joypad disabled during dialog/cutscene
+ADDR_TEXT_DELAY    = 0xCEE9   # wTextDelayFrames — nonzero while text scrolling
+# wJoypadDisable in Gold: bits 4, 6, 7 can disable input (faint anim, SGB
+# transfer, scripted). Any nonzero value means joypad is locked.
+ADDR_JOY_LOCK      = 0xD8BA   # wJoypadDisable
 
 # -- Pokedex --
-ADDR_DEX_OWNED     = 0xDE99   # 32 bytes (251 species + padding)
-ADDR_DEX_SEEN      = 0xDEB9
+ADDR_DEX_OWNED     = 0xDBE4   # 32 bytes (251 species + padding) (wPokedexCaught)
+ADDR_DEX_SEEN      = 0xDC04   # wPokedexSeen
 
 # -- Play time --
-ADDR_PLAYTIME_H    = 0xD4C4   # 2 bytes BE (hours)
-ADDR_PLAYTIME_M    = 0xD4C6   # 1 byte
-ADDR_PLAYTIME_S    = 0xD4C7   # 1 byte
-ADDR_PLAYTIME_F    = 0xD4C8   # 1 byte
+# wGameTimeHours is 2 bytes BE. The "wGameTimeCap" byte sits 1 before it.
+ADDR_PLAYTIME_H    = 0xD1EB   # 2 bytes BE (wGameTimeHours)
+ADDR_PLAYTIME_M    = 0xD1ED   # 1 byte (wGameTimeMinutes)
+ADDR_PLAYTIME_S    = 0xD1EE   # 1 byte (wGameTimeSeconds)
+ADDR_PLAYTIME_F    = 0xD1EF   # 1 byte (wGameTimeFrames)
 
 # -- Game state flag --
-ADDR_GAME_STATE    = 0xD0EB   # rough game-state marker (overworld/battle/menu)
+# Gold has no exact analog of Crystal's wGameLogicPaused at 0xD0EB.
+# wBattleMode is the most reliable "are we in battle vs overworld" marker.
+ADDR_GAME_STATE    = 0xD116   # wBattleMode (0=overworld/menu, 1=wild, 2=trainer)
 
 
 # ===================================================================
@@ -581,10 +589,15 @@ class GoldReader(GameMemoryReader):
         return result
 
     def read_dialog(self) -> Dict[str, Any]:
-        """Return whether a dialog/text-box is currently locking joypad."""
+        """Return whether a dialog/text-box is currently locking joypad.
+
+        Gold's wJoypadDisable disables input when *any* bit is set
+        (bits 4/6/7 in practice — scripted, faint anim, SGB transfer).
+        Treat the byte as a simple non-zero flag.
+        """
         joy_lock = self.emu.read_u8(ADDR_JOY_LOCK)
         text_delay = self.emu.read_u8(ADDR_TEXT_DELAY)
-        active = bool(joy_lock & 0x20) or text_delay != 0
+        active = joy_lock != 0 or text_delay != 0
         return {
             "active": active,
             "joy_lock": joy_lock,

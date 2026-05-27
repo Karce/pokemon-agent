@@ -80,8 +80,23 @@ PRESSES_POST_NICKNAME = 60         # Elm's "TOTODILE, eh?  ..." chain
 
 # Input timing.
 A_HOLD = 3
-DPAD_HOLD = 3
+# Gen-2 menu cursor needs the D-pad held noticeably longer than A —
+# 3 frames was unreliable and the cursor stayed at (0,0) on the
+# naming screen, producing "AAAA" every attempt.
+DPAD_HOLD = 10
 PRESS_GAP = 8
+
+# Minimum frames between consecutive presses, even when the dialog
+# detector says the coast is clear.  Stops the script from mashing A
+# faster than the game can update WRAM (cry animation, party-fill, etc.)
+# and prevents the "joy_lock=0 forever, press every 11 frames" failure
+# mode observed on Gold US.
+MIN_PRESS_INTERVAL = 16
+
+# Extra settle frames after the nickname is confirmed with START.
+# Elm's "TOTODILE, eh?" chain takes a moment to begin and the party
+# struct (including DVs) is not finalised until then.
+POST_NICKNAME_SETTLE = 60
 
 # Max frames to wait for dialog to become input-ready before forcing a press.
 DIALOG_WAIT_MAX = 240
@@ -161,9 +176,11 @@ def main() -> int:
                 f"{read_u8(ADDR_PARTY_MON1 + off + i):02X}" for i in range(16)
             )
             print(f"  0x{ADDR_PARTY_MON1 + off:04X}: {line}", flush=True)
+        jl = read_u8(ADDR_JOY_LOCK)
         print(
             f"  JOY_LOCK   @ 0x{ADDR_JOY_LOCK:04X} = "
-            f"0x{read_u8(ADDR_JOY_LOCK):02X} (bit5={bool(read_u8(ADDR_JOY_LOCK) & 0x20)})",
+            f"0x{jl:02X} (bit4={bool(jl & 0x10)} "
+            f"bit6={bool(jl & 0x40)} bit7={bool(jl & 0x80)})",
             flush=True,
         )
         print(
@@ -188,8 +205,10 @@ def main() -> int:
         return read_u8(ADDR_PARTY_COUNT)
 
     def dialog_active() -> bool:
-        # Mirrors GoldReader.read_dialog(): joy_lock bit 5 set OR text scrolling.
-        return bool(read_u8(ADDR_JOY_LOCK) & 0x20) or read_u8(ADDR_TEXT_DELAY) != 0
+        # Mirrors GoldReader.read_dialog(): in Gold, wJoypadDisable
+        # (0xD8BA) uses bits 4/6/7 — treat any nonzero byte as "input
+        # disabled". Also treat text-delay > 0 as "still animating".
+        return read_u8(ADDR_JOY_LOCK) != 0 or read_u8(ADDR_TEXT_DELAY) != 0
 
     def wait_input_ready(max_frames: int = DIALOG_WAIT_MAX) -> None:
         """Tick until the game is no longer animating text / locked out of input."""
@@ -210,6 +229,13 @@ def main() -> int:
     def press_a_when_ready() -> None:
         wait_input_ready()
         press("a")
+        # Even if the dialog detector said "ready", the game often
+        # needs a handful of frames after a press to write its next
+        # state (party-fill, text-delay-frames re-arming, joy-lock
+        # toggling for the cry animation, ...).  Without this floor the
+        # script mashes A at ~11-frame intervals and out-runs the
+        # game's bookkeeping.
+        tick(MIN_PRESS_INTERVAL)
 
     def load_state() -> None:
         with open(STATE, "rb") as f:
@@ -249,25 +275,37 @@ def main() -> int:
         ("I", 0, 8),
     ]
 
+    # Frames to wait between releasing one D-pad direction and pressing
+    # the next.  PRESS_GAP (8) was empirically too tight on the Gen-2
+    # naming keyboard.
+    DPAD_GAP = 12
+
     def move_cursor(dr: int, dc: int) -> None:
         for _ in range(dr):
-            press("down", hold=DPAD_HOLD)
+            press("down", hold=DPAD_HOLD, gap=DPAD_GAP)
         for _ in range(-dr):
-            press("up", hold=DPAD_HOLD)
+            press("up", hold=DPAD_HOLD, gap=DPAD_GAP)
         for _ in range(dc):
-            press("right", hold=DPAD_HOLD)
+            press("right", hold=DPAD_HOLD, gap=DPAD_GAP)
         for _ in range(-dc):
-            press("left", hold=DPAD_HOLD)
+            press("left", hold=DPAD_HOLD, gap=DPAD_GAP)
 
     def type_kiwi() -> None:
         cur_r, cur_c = 0, 0
         for _ch, r, c in KIWI_KEYS:
             move_cursor(r - cur_r, c - cur_c)
             press("a")
+            # Give the keyboard a beat to register the letter before
+            # the next cursor move.
+            tick(MIN_PRESS_INTERVAL)
             cur_r, cur_c = r, c
         # START confirms the name on the Gen-2 naming screen.  Pressing
         # A here would just type a fifth character.
         press("start")
+        # The game needs time to dismiss the keyboard, return to the
+        # overworld dialog flow, and start writing the final party
+        # struct.  Reading DVs immediately gives stale/garbage.
+        tick(POST_NICKNAME_SETTLE)
 
     # -- main loop ----------------------------------------------------------
 
