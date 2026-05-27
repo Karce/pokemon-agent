@@ -161,7 +161,10 @@ def main() -> int:
     )
 
     pyboy = PyBoy(str(ROM), window="null" if HEADLESS else "SDL2")
-    pyboy.sound_emulated = False
+    try:
+        pyboy.sound_emulated = False
+    except AttributeError:
+        pass
     # FAST: 0 = unthrottled.  SLOW: 1 = real-time, so you can watch the
     # game and the debug stream side-by-side.
     pyboy.set_emulation_speed(0 if not slow else 1)
