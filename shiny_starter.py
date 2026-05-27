@@ -122,7 +122,7 @@ POST_NICKNAME_SETTLE = 60
 DIALOG_WAIT_MAX = 240
 
 # Print a throughput line every N attempts.
-THROUGHPUT_INTERVAL = 100
+THROUGHPUT_INTERVAL = 50
 
 # WRAM bank register (GBC). Bank 1 holds most Gen-2 game state; if a
 # read of party_count returns garbage, check whether SVBK matches.
