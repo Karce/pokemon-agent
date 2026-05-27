@@ -154,13 +154,14 @@ def main() -> int:
         return 1
     slow = SPEED == "SLOW"
 
-    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {30 + (RUN_SEED % 20)} presses/attempt)")
+    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {15 + (RUN_SEED % 10)} presses/attempt)")
     print(
         f"Hunting shiny Totodile with ATK DV in "
         f"[{MIN_ATK_DV}, {MAX_ATK_DV}]  (HEADLESS={HEADLESS}, SPEED={SPEED})"
     )
 
     pyboy = PyBoy(str(ROM), window="null" if HEADLESS else "SDL2")
+    pyboy.sound_emulated = False
     # FAST: 0 = unthrottled.  SLOW: 1 = real-time, so you can watch the
     # game and the debug stream side-by-side.
     pyboy.set_emulation_speed(0 if not slow else 1)
@@ -176,8 +177,9 @@ def main() -> int:
     # -- low-level helpers --------------------------------------------------
 
     def tick(n: int = 1) -> None:
+        # render=False saves the screen rendering work in headless mode
         for _ in range(n):
-            if not pyboy.tick():
+            if not pyboy.tick(render=False):
                 sys.exit(0)
             frame_count[0] += 1
             total_frames[0] += 1
@@ -253,10 +255,11 @@ def main() -> int:
 
     def wait_input_ready(max_frames: int = DIALOG_WAIT_MAX) -> None:
         """Tick until the game is no longer animating text / locked out of input."""
-        for _ in range(max_frames):
+        # Chunks of 4 cut Python-loop overhead vs. tick(1) per frame.
+        for _ in range(max_frames // 4):
             if not dialog_active():
                 return
-            tick(1)
+            tick(4)
         # If we fell through, dialog stayed "active" the whole window —
         # surface this in SLOW mode because it usually means our
         # detection bits are wrong, not that the game is really busy.
@@ -286,7 +289,7 @@ def main() -> int:
     # -- RNG mixing --------------------------------------------------------
 
     def prime_rng_run() -> None:
-        """Burn 30-49 B/SELECT presses based on RUN_SEED to push the
+        """Burn 15-24 B/SELECT presses based on RUN_SEED to push the
         RNG past the save state's frozen LFSR position.
 
         The save state always restores the same RNG; without this burn,
@@ -297,7 +300,7 @@ def main() -> int:
         attempts still comes from mix_rng(attempt) layered on top.
         """
         state = (RUN_SEED * 2654435761 + 1) & 0xFFFFFFFF
-        n_presses = 30 + (RUN_SEED % 20)  # 30..49 presses
+        n_presses = 15 + (RUN_SEED % 10)  # 15..24 presses
         for _ in range(n_presses):
             state = (state * 1103515245 + 12345) & 0xFFFFFFFF
             button = "b" if (state >> 17) & 1 else "select"
