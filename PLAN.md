@@ -66,19 +66,9 @@ shiny = (atk_dv in {2,3,6,7,10,11,14,15}) and (def_dv == 10) and (spd_dv == 10) 
 
 ---
 
-## 🔄 Phase 3 — Farming State Machine *(in progress — shiny starter reset)*
+## 🔲 Phase 3 — Farming State Machine
 
-### Step 3a — Shiny Starter Reset
-Building a script that resets for a shiny starter Totodile.
-
-- [x] GoldReader and shiny detection ready (Phases 1 & 2)
-- [ ] Create `shiny_starter.py` — loads save state, runs starter sequence at max speed with GUI
-- [ ] Button sequence: select Pokeball → choose Totodile → nickname "Kiwi" → advance dialog
-- [ ] Read party DVs after dialog clears
-- [ ] Shiny → save state + alert. Not shiny → reset and repeat.
-- [ ] Verify RNG progression across resets
-
-### Step 3b — Wild Encounter Farming (future)
+Deterministic state machine. No LLM calls on the hot path.
 
 **States:**
 1. **NAVIGATE** — walk through encounter grass, avoid obstacles, use Repel if active
