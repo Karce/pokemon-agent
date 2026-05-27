@@ -7,18 +7,12 @@ typing, no Elm follow-up dialog — saving ~2350 frames vs. running the
 full sequence every loop.  Only on a shiny do we advance the rest of
 the dialog, type "KIWI", and snapshot the state.
 
-What actually changes DVs between attempts is a *direct write* to the
-Gen-2 RNG state in HRAM (hRandomAdd at $FFD9, hRandomSub at $FFDA in
-Pokemon Gold US — verified against the pret/pokegold disassembly's
-ram/hram.asm by counting bytes from $FF80 through every preceding
-field/UNION).  Each attempt enumerates a distinct (add, sub) pair, so
-we sweep all 65536 RNG states with no repeats.
-
-The Gen-2 Random routine isn't a pure LFSR — it adds/subtracts rDIV
-(the GB hardware divider register) into hRandomAdd/hRandomSub.  But
-PyBoy's save_state captures rDIV, and load_state restores it, so once
-we've loaded and written (add, sub) the DV outcome is deterministic:
-identical (add, sub) → identical DVs.
+What actually varies the DVs between attempts is a combination of a
+small per-attempt frame-tick jitter (which advances rDIV, the GB
+divider register that Gen-2's Random routine mixes into hRandomAdd/
+hRandomSub) and a short deterministic-but-attempt-dependent burst of
+B/SELECT presses (which exercise the joypad-read code path and let
+several Random() calls fire before the starter's DVs are rolled).
 
 Run with the project venv active:
     source .venv/bin/activate
@@ -137,54 +131,9 @@ THROUGHPUT_INTERVAL = 50
 # read of party_count returns garbage, check whether SVBK matches.
 ADDR_SVBK = 0xFF70
 
-# Gen-2 RNG state (HRAM, Pokemon Gold US).  See module docstring for
-# how these were derived from the pret/pokegold disassembly.  Random:
-#     a = rDIV; hRandomAdd += a + cf      (cf undefined on entry)
-#     a = rDIV; hRandomSub  = hRandomSub - a - cf_of_adc
-# The starter's DVs come from two consecutive Random() returns
-# (engine/pokemon/move_mon.asm): byte0 = ATK:DEF, byte1 = SPD:SPC.
-ADDR_H_RANDOM_ADD = 0xFFD9
-ADDR_H_RANDOM_SUB = 0xFFDA
-
-# Game Boy hardware divider register.  Increments at 16384 Hz (independent
-# of CPU stalls), so any per-attempt timing variability is visible here.
-# Gen-2's Random() mixes rDIV into hRandomAdd/hRandomSub on every call —
-# if rDIV is constant across attempts the DVs are too, even with distinct
-# (add, sub) seeds.
-ADDR_DIV = 0xFF04
-
-# Minimal per-attempt jitter (frames) injected after load_state() before
-# we issue the first input.  This was previously provided implicitly by
-# mix_rng()'s variable-length B/SELECT bursts; without it every attempt
-# hits the first Random() call at an identical rDIV phase and the DVs
-# stop varying even when (add, sub) does.  Small modulus keeps cost
-# negligible (~16 frames worst case).
-JITTER_MOD = 17
-
-# (add, sub) iteration parameters.  We walk the 16-bit space (add * 256
-# + sub) by a stride coprime to 65536.  Stride 257 (= 0x0101) was a
-# disaster: it increments both the add and the sub byte by 1 every
-# attempt, so consecutive states differ by exactly +1 in each byte.
-# Diagnostic traces showed hRandomSub getting zeroed by the game's
-# VBlank/init code between our write and the first Random() call,
-# leaving hRandomAdd as the sole entropy source — and with add changing
-# by only 1 each attempt, the DV-relevant low nibbles cycled every ~4–8
-# attempts.
-#
-# Stride 65521 is the largest prime below 65536 (and coprime to 2^16
-# since 2^16 is a pure power of two, so every odd integer is coprime).
-# 65521 ≡ −15 (mod 2^16): the 16-bit *value* moves by only 15 per step,
-# but the byte split flips dramatically — e.g. 0x0000 → 0xFFF1 →
-# 0xFFE2 → 0xFFD3 — so the add byte (which is the surviving entropy
-# after sub gets zeroed) jumps across its full range many times per
-# cycle instead of marching monotonically through it.  That's what
-# breaks the 4–8-attempt DV cycle.
-RNG_STRIDE = 65521
-
-# Starting offset into the (add, sub) space.  Random per run so two
-# fresh runs explore different parts of the space first.  Within a run
-# every (add, sub) is still visited exactly once before we wrap.
-RNG_START_OFFSET = time.time_ns() & 0xFFFF
+# Per-run seed used to vary the mix_rng() pattern across runs so two
+# fresh runs don't explore the exact same DV sequence.
+RUN_SEED = time.time_ns() & 0xFFFF
 
 
 def main() -> int:
@@ -205,10 +154,7 @@ def main() -> int:
         return 1
     slow = SPEED == "SLOW"
 
-    print(
-        f"RNG_START_OFFSET=0x{RNG_START_OFFSET:04X} "
-        f"RNG_STRIDE={RNG_STRIDE} (sweeping all 65536 (add, sub) states)"
-    )
+    print(f"RUN_SEED=0x{RUN_SEED:04X}")
     print(
         f"Hunting shiny Totodile with ATK DV in "
         f"[{MIN_ATK_DV}, {MAX_ATK_DV}]  (HEADLESS={HEADLESS}, SPEED={SPEED})"
@@ -345,51 +291,23 @@ def main() -> int:
             pyboy.load_state(f)
         tick(4)
 
-    # -- RNG direct manipulation -------------------------------------------
+    def mix_rng(attempt: int) -> None:
+        """Press B/SELECT in a short deterministic pattern derived from
+        the attempt number (and RUN_SEED), to advance the in-game RNG
+        before the starter's DVs are rolled.
 
-    def rng_snapshot() -> tuple[int, int, int]:
-        """Read (hRandomAdd, hRandomSub, rDIV) — full Random()-input state."""
-        return (
-            read_u8(ADDR_H_RANDOM_ADD),
-            read_u8(ADDR_H_RANDOM_SUB),
-            read_u8(ADDR_DIV),
-        )
-
-    def write_rng(add_val: int, sub_val: int) -> tuple[int, int, int, bool]:
-        """Overwrite Gen-2's RNG state in HRAM, verify, return readback.
-
-        The next call to the game's Random routine will mix rDIV into
-        these bytes and the result becomes a DV nibble pair.  By picking
-        distinct (add, sub) on every attempt we sweep DV space without
-        any input mashing.
-
-        We read the bytes back immediately to confirm the write stuck —
-        if pyboy.memory[] writes to HRAM are being clobbered (e.g. by a
-        pending VBlank handler) we want to know.  Returns
-        (got_add, got_sub, got_div, stuck).
+        B and SELECT are safe here: neither advances dialog nor opens a
+        menu while we're standing in front of the Pokeball.  Each press
+        causes the joypad-read code path to run, which in turn lets a
+        few Random() calls fire with different rDIV phases.
         """
-        want_add, want_sub = add_val & 0xFF, sub_val & 0xFF
-        pyboy.memory[ADDR_H_RANDOM_ADD] = want_add
-        pyboy.memory[ADDR_H_RANDOM_SUB] = want_sub
-        got_add, got_sub, got_div = rng_snapshot()
-        if (got_add, got_sub) != (want_add, want_sub):
-            # Second attempt — same write, in case the first one raced
-            # something.  Re-snapshot regardless of outcome so callers
-            # see ground truth.
-            pyboy.memory[ADDR_H_RANDOM_ADD] = want_add
-            pyboy.memory[ADDR_H_RANDOM_SUB] = want_sub
-            got_add, got_sub, got_div = rng_snapshot()
-        return got_add, got_sub, got_div, (got_add, got_sub) == (want_add, want_sub)
-
-    def attempt_to_rng(attempt: int) -> tuple[int, int]:
-        """Map a 1-based attempt index to a unique (add, sub) pair.
-
-        Visits all 65536 (add, sub) combinations in a stride-spaced
-        order before wrapping.  Because RNG_STRIDE is coprime to 2^16
-        every value in [0, 65535] appears exactly once per cycle.
-        """
-        n = ((attempt - 1) * RNG_STRIDE + RNG_START_OFFSET) & 0xFFFF
-        return (n >> 8) & 0xFF, n & 0xFF
+        n = (attempt + RUN_SEED) & 0xFFFF
+        # 3-8 presses total, varying with attempt.
+        total = 3 + (n % 6)
+        for i in range(total):
+            # Alternate B and SELECT based on bits of n.
+            btn = "b" if ((n >> i) & 1) == 0 else "select"
+            press(btn, hold=2, gap=4)
 
     # -- DV / nickname readers ---------------------------------------------
 
@@ -464,23 +382,14 @@ def main() -> int:
             attempt += 1
             frame_count[0] = 0
             load_state()
-            # Per-attempt jitter so the rDIV phase at the first Random()
-            # call varies even though (add, sub) are deterministic.
-            # save_state captures rDIV, so without this every attempt
-            # would see identical rDIV at the same in-game cycle.
-            tick(attempt % JITTER_MOD)
-            rng_add, rng_sub = attempt_to_rng(attempt)
-            # Overwrite hRandomAdd/hRandomSub *after* load_state has
-            # settled (the tick(4) in load_state() lets any pending
-            # post-load init run).  The next in-game Random call will
-            # mix rDIV into these bytes and the result becomes the
-            # ATK/DEF and SPD/SPC DV nibbles.
-            got_add, got_sub, div_at_write, stuck = write_rng(rng_add, rng_sub)
+            # Per-attempt frame jitter: advances rDIV before any input
+            # so the first Random() call sees a different phase even
+            # across identical mix_rng() bursts.
+            tick(attempt % 13 + 5)
+            mix_rng(attempt)
             dbg(
                 f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}, "
-                f"HEADLESS={HEADLESS}, "
-                f"hRandomAdd=0x{rng_add:02X} hRandomSub=0x{rng_sub:02X}, "
-                f"ATK target [{MIN_ATK_DV},{MAX_ATK_DV}]) ==="
+                f"HEADLESS={HEADLESS}, ATK target [{MIN_ATK_DV},{MAX_ATK_DV}]) ==="
             )
 
             # Phase 1: Pokeball interact + "WANT THIS TOTODILE?" YES.
@@ -507,12 +416,6 @@ def main() -> int:
             if DUMP_MEMORY:
                 dump_diagnostic("party_count > 0")
 
-            # Snapshot RNG state at the moment the DVs are visible.
-            # Compared against (got_add, got_sub, div_at_write) on the
-            # status line below, this proves whether (a) our HRAM write
-            # stuck, and (b) rDIV is actually advancing between attempts.
-            add_at_dv, sub_at_dv, div_at_dv = rng_snapshot()
-
             # Early DV check — party slot 0 (species + DVs) is finalised
             # the instant party_count flips to 1, well before Elm's
             # "received TOTODILE!" dialog finishes.  On a non-shiny we
@@ -520,10 +423,6 @@ def main() -> int:
             # per attempt.
             species, dvs = slot0_species_and_dvs()
             dvs_tuple = (dvs.attack, dvs.defense, dvs.speed, dvs.special)
-            # Two distinct (add, sub) inputs can still collide in DV space
-            # because rDIV is mixed into the output by Random().  This is
-            # not the old "stuck RNG" failure — just an output-space
-            # collision — so it's logged but not flagged as a bug.
             prev_attempt = seen_dvs.get(dvs_tuple)
             if prev_attempt is None:
                 seen_dvs[dvs_tuple] = attempt
@@ -544,22 +443,11 @@ def main() -> int:
                 status = f"*** SHINY (ATK {dvs.attack} outside [{MIN_ATK_DV},{MAX_ATK_DV}]) ***"
             else:
                 status = "not shiny"
-            # rng trace:
-            #   w=AB:CD→GH:IJ  values we wrote → values read back at write time
-            #   (a trailing '!' means the write didn't stick — bug 1 evidence)
-            #   d_w=XX          rDIV at write time
-            #   r=KL:MN d_r=YY  values + rDIV right before DV read
-            stuck_mark = "" if stuck else "!"
-            rng_trace = (
-                f"w=0x{rng_add:02X}{rng_sub:02X}→0x{got_add:02X}{got_sub:02X}{stuck_mark} "
-                f"d_w=0x{div_at_write:02X}  "
-                f"r=0x{add_at_dv:02X}{sub_at_dv:02X} d_r=0x{div_at_dv:02X}"
-            )
             print(
                 f"[{attempt:>4}] {species_name:>10}  "
                 f"ATK={dvs.attack:2d} DEF={dvs.defense:2d} "
                 f"SPD={dvs.speed:2d} SPC={dvs.special:2d}  "
-                f"[{rng_trace}]  {status}"
+                f"{status}"
             )
 
             if attempt % THROUGHPUT_INTERVAL == 0:
