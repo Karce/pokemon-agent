@@ -162,13 +162,24 @@ ADDR_DIV = 0xFF04
 JITTER_MOD = 17
 
 # (add, sub) iteration parameters.  We walk the 16-bit space (add * 256
-# + sub) by a stride coprime to 65536 so consecutive attempts land at
-# well-separated points — useful because adjacent (add, sub) inputs
-# tend to produce only-slightly-different DVs (the carry chain and
-# rDIV mixing decorrelate them, but not by much).  Any odd integer is
-# coprime to 2^16; 257 = 0x101 is a Fermat prime that gives a nice
-# spread.
-RNG_STRIDE = 257
+# + sub) by a stride coprime to 65536.  Stride 257 (= 0x0101) was a
+# disaster: it increments both the add and the sub byte by 1 every
+# attempt, so consecutive states differ by exactly +1 in each byte.
+# Diagnostic traces showed hRandomSub getting zeroed by the game's
+# VBlank/init code between our write and the first Random() call,
+# leaving hRandomAdd as the sole entropy source — and with add changing
+# by only 1 each attempt, the DV-relevant low nibbles cycled every ~4–8
+# attempts.
+#
+# Stride 65521 is the largest prime below 65536 (and coprime to 2^16
+# since 2^16 is a pure power of two, so every odd integer is coprime).
+# 65521 ≡ −15 (mod 2^16): the 16-bit *value* moves by only 15 per step,
+# but the byte split flips dramatically — e.g. 0x0000 → 0xFFF1 →
+# 0xFFE2 → 0xFFD3 — so the add byte (which is the surviving entropy
+# after sub gets zeroed) jumps across its full range many times per
+# cycle instead of marching monotonically through it.  That's what
+# breaks the 4–8-attempt DV cycle.
+RNG_STRIDE = 65521
 
 # Starting offset into the (add, sub) space.  Random per run so two
 # fresh runs explore different parts of the space first.  Within a run
