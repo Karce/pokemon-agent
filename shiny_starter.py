@@ -64,8 +64,8 @@ TOTODILE_ID = 158
 #   True   — window="null"; no SDL2 window, no rendering work, MUCH
 #            faster at emulation_speed=0.  Recommended for farming.
 #   False  — window="SDL2"; visible window for debugging.
-SPEED = "SLOW"
-DUMP_MEMORY = True
+SPEED = "FAST"
+DUMP_MEMORY = False
 HEADLESS = True
 
 # ── Shiny target filter ────────────────────────────────────────────────
