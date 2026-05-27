@@ -5,15 +5,14 @@ Pokeballs, picks Totodile, advances through the FULL dialog sequence
 INCLUDING the nickname keyboard (typing "KIWI" every attempt), reads
 party-slot-0 DVs, and either halts on a shiny or reloads and retries.
 
-Why type the nickname on non-shiny attempts too?  Two reasons:
-  1. We want a single, well-defined dialog flow that always ends in
-     the same overworld state — easier to reason about than branching
-     "if shiny do A, else do B".
-  2. Mashing A blindly through the nickname Y/N would accept the
-     default name TOTODILE, and the slight timing variance between
-     attempts (different jitter, different keyboard timing) is what
-     lets the Gen-2 RNG land on different DVs.  Skipping the keyboard
-     would mean identical DVs forever.
+Why type the nickname on non-shiny attempts too?  We want a single,
+well-defined dialog flow that always ends in the same overworld
+state — easier to reason about than branching "if shiny do A, else
+do B".
+
+What actually changes DVs between attempts is mix_rng() — see its
+docstring.  Idle frame ticks do NOT advance Gen-2's RNG; only
+input-handler invocations do.
 
 Run with the project venv active:
     source .venv/bin/activate
@@ -252,6 +251,34 @@ def main() -> int:
             pyboy.load_state(f)
         tick(4)
 
+    # -- RNG mixing --------------------------------------------------------
+
+    def mix_rng(attempt: int) -> None:
+        """Advance Gen-2's LFSR by pressing B/SELECT in a deterministic,
+        attempt-derived pattern.
+
+        Gen-2 Gold uses a 16-bit LFSR that advances on input-handler
+        invocations, not on idle frame ticks.  Burning idle frames
+        (the old approach) left the RNG state identical every run and
+        produced the same DVs forever.
+
+        In the post-load overworld (player standing in front of the
+        Pokeball), B and SELECT are both no-ops for game state but
+        still drive the input handler, so they mix the RNG cleanly.
+
+        Deterministic LCG seeded from `attempt` — no Python `random`
+        module — so a shiny attempt can be reproduced from just its
+        index.
+        """
+        state = (attempt * 2654435761 + 1) & 0xFFFFFFFF
+        n_presses = 6 + (attempt % 9)  # 6..14 presses
+        for _ in range(n_presses):
+            state = (state * 1103515245 + 12345) & 0xFFFFFFFF
+            button = "b" if (state >> 17) & 1 else "select"
+            gap = 3 + ((state >> 8) & 0x07)  # 3..10 frame gap
+            press(button, hold=A_HOLD, gap=gap)
+        dbg(f"mix_rng attempt={attempt} n_presses={n_presses}")
+
     # -- DV / nickname readers ---------------------------------------------
 
     def slot0_species_and_dvs():
@@ -327,11 +354,12 @@ def main() -> int:
             load_state()
             dbg(f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}) ===")
 
-            # Per-attempt jitter so the divider/RNG state shifts between
-            # runs and we actually roll different DVs each time.  Without
-            # this every attempt would be byte-for-byte identical and we'd
-            # be stuck with the same DVs forever.
-            tick((attempt * 13) % 240)
+            # Actively mix Gen-2's LFSR with attempt-derived B/SELECT
+            # presses.  The previous passive `tick(...)` jitter looked
+            # like it was randomising things but didn't — idle frames
+            # don't advance the RNG, so every run produced identical
+            # DVs.  See mix_rng() for the why.
+            mix_rng(attempt)
 
             # Phase 1: Pokeball interact + "WANT THIS TOTODILE?" YES.
             filled = False
@@ -345,6 +373,13 @@ def main() -> int:
                 if pc > 0:
                     filled = True
                     break
+                # Attempt-derived pre-press wait shifts when our A
+                # lands relative to the game's per-frame work, so the
+                # RNG sampled at DV-generation time differs even when
+                # the press count is identical.
+                extra = (attempt * 7 + i * 3) % 5
+                if extra:
+                    tick(extra)
                 press_a_when_ready()
             if not filled:
                 print(
