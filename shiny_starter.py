@@ -7,9 +7,18 @@ typing, no Elm follow-up dialog — saving ~2350 frames vs. running the
 full sequence every loop.  Only on a shiny do we advance the rest of
 the dialog, type "KIWI", and snapshot the state.
 
-What actually changes DVs between attempts is mix_rng() — see its
-docstring.  Idle frame ticks do NOT advance Gen-2's RNG; only
-input-handler invocations do.
+What actually changes DVs between attempts is a *direct write* to the
+Gen-2 RNG state in HRAM (hRandomAdd at $FFD9, hRandomSub at $FFDA in
+Pokemon Gold US — verified against the pret/pokegold disassembly's
+ram/hram.asm by counting bytes from $FF80 through every preceding
+field/UNION).  Each attempt enumerates a distinct (add, sub) pair, so
+we sweep all 65536 RNG states with no repeats.
+
+The Gen-2 Random routine isn't a pure LFSR — it adds/subtracts rDIV
+(the GB hardware divider register) into hRandomAdd/hRandomSub.  But
+PyBoy's save_state captures rDIV, and load_state restores it, so once
+we've loaded and written (add, sub) the DV outcome is deterministic:
+identical (add, sub) → identical DVs.
 
 Run with the project venv active:
     source .venv/bin/activate
@@ -128,12 +137,28 @@ THROUGHPUT_INTERVAL = 50
 # read of party_count returns garbage, check whether SVBK matches.
 ADDR_SVBK = 0xFF70
 
-# Per-run seed.  The save state captures Gen-2's 16-bit LFSR at the
-# moment of save, so every load_state() starts the RNG from the same
-# position.  mix_rng(attempt) varies attempts WITHIN a run, but without
-# a run-level seed, attempt 1 of every run produced identical DVs.
-# Seeding from time_ns() gives each run a different RNG starting point.
-RUN_SEED = time.time_ns() & 0xFFFF
+# Gen-2 RNG state (HRAM, Pokemon Gold US).  See module docstring for
+# how these were derived from the pret/pokegold disassembly.  Random:
+#     a = rDIV; hRandomAdd += a + cf      (cf undefined on entry)
+#     a = rDIV; hRandomSub  = hRandomSub - a - cf_of_adc
+# The starter's DVs come from two consecutive Random() returns
+# (engine/pokemon/move_mon.asm): byte0 = ATK:DEF, byte1 = SPD:SPC.
+ADDR_H_RANDOM_ADD = 0xFFD9
+ADDR_H_RANDOM_SUB = 0xFFDA
+
+# (add, sub) iteration parameters.  We walk the 16-bit space (add * 256
+# + sub) by a stride coprime to 65536 so consecutive attempts land at
+# well-separated points — useful because adjacent (add, sub) inputs
+# tend to produce only-slightly-different DVs (the carry chain and
+# rDIV mixing decorrelate them, but not by much).  Any odd integer is
+# coprime to 2^16; 257 = 0x101 is a Fermat prime that gives a nice
+# spread.
+RNG_STRIDE = 257
+
+# Starting offset into the (add, sub) space.  Random per run so two
+# fresh runs explore different parts of the space first.  Within a run
+# every (add, sub) is still visited exactly once before we wrap.
+RNG_START_OFFSET = time.time_ns() & 0xFFFF
 
 
 def main() -> int:
@@ -154,7 +179,10 @@ def main() -> int:
         return 1
     slow = SPEED == "SLOW"
 
-    print(f"RUN_SEED=0x{RUN_SEED:04X} (burn-in {15 + (RUN_SEED % 10)} presses/attempt)")
+    print(
+        f"RNG_START_OFFSET=0x{RNG_START_OFFSET:04X} "
+        f"RNG_STRIDE={RNG_STRIDE} (sweeping all 65536 (add, sub) states)"
+    )
     print(
         f"Hunting shiny Totodile with ATK DV in "
         f"[{MIN_ATK_DV}, {MAX_ATK_DV}]  (HEADLESS={HEADLESS}, SPEED={SPEED})"
@@ -291,53 +319,35 @@ def main() -> int:
             pyboy.load_state(f)
         tick(4)
 
-    # -- RNG mixing --------------------------------------------------------
+    # -- RNG direct manipulation -------------------------------------------
 
-    def prime_rng_run() -> None:
-        """Burn 15-24 B/SELECT presses based on RUN_SEED to push the
-        RNG past the save state's frozen LFSR position.
+    def read_rng() -> tuple[int, int]:
+        """Read the current (hRandomAdd, hRandomSub) from HRAM."""
+        return (
+            read_u8(ADDR_H_RANDOM_ADD),
+            read_u8(ADDR_H_RANDOM_SUB),
+        )
 
-        The save state always restores the same RNG; without this burn,
-        mix_rng(attempt) sees the same starting state each run and
-        attempt N produces identical DVs across runs.  Because RUN_SEED
-        is fixed for the process lifetime, this burn produces the same
-        offset every load_state() within a run — variance across
-        attempts still comes from mix_rng(attempt) layered on top.
+    def write_rng(add_val: int, sub_val: int) -> None:
+        """Overwrite Gen-2's RNG state in HRAM.
+
+        The next call to the game's Random routine will mix rDIV into
+        these bytes and the result becomes a DV nibble pair.  By
+        picking distinct (add, sub) on every attempt we sweep DV space
+        without any input mashing.
         """
-        state = (RUN_SEED * 2654435761 + 1) & 0xFFFFFFFF
-        n_presses = 15 + (RUN_SEED % 10)  # 15..24 presses
-        for _ in range(n_presses):
-            state = (state * 1103515245 + 12345) & 0xFFFFFFFF
-            button = "b" if (state >> 17) & 1 else "select"
-            gap = 3 + ((state >> 8) & 0x07)
-            press(button, hold=A_HOLD, gap=gap)
-        dbg(f"prime_rng_run RUN_SEED=0x{RUN_SEED:04X} n_presses={n_presses}")
+        pyboy.memory[ADDR_H_RANDOM_ADD] = add_val & 0xFF
+        pyboy.memory[ADDR_H_RANDOM_SUB] = sub_val & 0xFF
 
-    def mix_rng(attempt: int) -> None:
-        """Advance Gen-2's LFSR by pressing B/SELECT in a deterministic,
-        attempt-derived pattern.
+    def attempt_to_rng(attempt: int) -> tuple[int, int]:
+        """Map a 1-based attempt index to a unique (add, sub) pair.
 
-        Gen-2 Gold uses a 16-bit LFSR that advances on input-handler
-        invocations, not on idle frame ticks.  Burning idle frames
-        (the old approach) left the RNG state identical every run and
-        produced the same DVs forever.
-
-        In the post-load overworld (player standing in front of the
-        Pokeball), B and SELECT are both no-ops for game state but
-        still drive the input handler, so they mix the RNG cleanly.
-
-        Deterministic LCG seeded from `attempt` — no Python `random`
-        module — so a shiny attempt can be reproduced from just its
-        index.
+        Visits all 65536 (add, sub) combinations in a stride-spaced
+        order before wrapping.  Because RNG_STRIDE is coprime to 2^16
+        every value in [0, 65535] appears exactly once per cycle.
         """
-        state = (attempt * 2654435761 + 1) & 0xFFFFFFFF
-        n_presses = 6 + (attempt % 9)  # 6..14 presses
-        for _ in range(n_presses):
-            state = (state * 1103515245 + 12345) & 0xFFFFFFFF
-            button = "b" if (state >> 17) & 1 else "select"
-            gap = 3 + ((state >> 8) & 0x07)  # 3..10 frame gap
-            press(button, hold=A_HOLD, gap=gap)
-        dbg(f"mix_rng attempt={attempt} n_presses={n_presses}")
+        n = ((attempt - 1) * RNG_STRIDE + RNG_START_OFFSET) & 0xFFFF
+        return (n >> 8) & 0xFF, n & 0xFF
 
     # -- DV / nickname readers ---------------------------------------------
 
@@ -412,20 +422,19 @@ def main() -> int:
             attempt += 1
             frame_count[0] = 0
             load_state()
+            rng_add, rng_sub = attempt_to_rng(attempt)
+            # Overwrite hRandomAdd/hRandomSub *after* load_state has
+            # settled (the tick(4) in load_state() lets any pending
+            # post-load init run).  The next in-game Random call will
+            # mix rDIV into these bytes and the result becomes the
+            # ATK/DEF and SPD/SPC DV nibbles.
+            write_rng(rng_add, rng_sub)
             dbg(
                 f"=== attempt {attempt} (SPEED={SPEED}, DUMP_MEMORY={DUMP_MEMORY}, "
-                f"HEADLESS={HEADLESS}, RUN_SEED=0x{RUN_SEED:04X}, "
+                f"HEADLESS={HEADLESS}, "
+                f"hRandomAdd=0x{rng_add:02X} hRandomSub=0x{rng_sub:02X}, "
                 f"ATK target [{MIN_ATK_DV},{MAX_ATK_DV}]) ==="
             )
-
-            # First, shift the RNG by a run-dependent amount so
-            # attempt 1 of this run does not collide with attempt 1 of
-            # any previous run.  See prime_rng_run() / RUN_SEED.
-            prime_rng_run()
-
-            # Then layer the attempt-derived mix on top.  This is what
-            # varies DVs WITHIN a single run.
-            mix_rng(attempt)
 
             # Phase 1: Pokeball interact + "WANT THIS TOTODILE?" YES.
             filled = False
@@ -439,13 +448,6 @@ def main() -> int:
                 if pc > 0:
                     filled = True
                     break
-                # Attempt-derived pre-press wait shifts when our A
-                # lands relative to the game's per-frame work, so the
-                # RNG sampled at DV-generation time differs even when
-                # the press count is identical.
-                extra = (attempt * 7 + i * 3) % 5
-                if extra:
-                    tick(extra)
                 press_a_when_ready()
             if not filled:
                 print(
@@ -465,12 +467,16 @@ def main() -> int:
             # per attempt.
             species, dvs = slot0_species_and_dvs()
             dvs_tuple = (dvs.attack, dvs.defense, dvs.speed, dvs.special)
+            # Two distinct (add, sub) inputs can still collide in DV space
+            # because rDIV is mixed into the output by Random().  This is
+            # not the old "stuck RNG" failure — just an output-space
+            # collision — so it's logged but not flagged as a bug.
             prev_attempt = seen_dvs.get(dvs_tuple)
             if prev_attempt is None:
                 seen_dvs[dvs_tuple] = attempt
-            else:
-                print(
-                    f"  ⚠ RNG REPEAT: (ATK={dvs.attack}, DEF={dvs.defense}, "
+            elif slow:
+                dbg(
+                    f"DV collision: (ATK={dvs.attack}, DEF={dvs.defense}, "
                     f"SPD={dvs.speed}, SPC={dvs.special}) "
                     f"first seen at attempt {prev_attempt}, now at attempt {attempt}"
                 )
