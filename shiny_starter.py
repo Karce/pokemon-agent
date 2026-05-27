@@ -63,8 +63,8 @@ TOTODILE_ID = 158
 #            region whenever party_count first becomes > 0, and also on
 #            phase-1 timeout. Pairs well with SLOW for diagnosing the
 #            "party never fills" failure.
-SPEED = "FAST"
-DUMP_MEMORY = False
+SPEED = "SLOW"
+DUMP_MEMORY = True
 
 # Bounds for each phase.  These are pressed-with-dialog-aware-waits, so
 # a "press" here means "wait for joy_lock to clear, then tap A".  Counts
