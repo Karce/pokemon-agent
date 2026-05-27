@@ -66,9 +66,19 @@ shiny = (atk_dv in {2,3,6,7,10,11,14,15}) and (def_dv == 10) and (spd_dv == 10) 
 
 ---
 
-## 🔲 Phase 3 — Farming State Machine
+## ✅ Phase 3 — Farming State Machine (Step 3a: Shiny Starter Reset)
 
-Deterministic state machine. No LLM calls on the hot path.
+### Step 3a — Shiny Starter Reset *(complete — shiny_starter.py on branch shiny-starter-reset)*
+
+- [x] GoldReader and shiny detection ready (Phases 1 & 2)
+- [x] Create `shiny_starter.py` — loads save state, runs starter sequence at max speed with GUI
+- [x] Button sequence: select Pokeball → choose Totodile → nickname "Kiwi" → advance dialog
+- [x] Read party DVs after dialog clears
+- [x] Shiny → save state + alert. Not shiny → reset and repeat.
+- [x] Verify RNG progression via frame jitter + DV printing per attempt
+- [ ] **Test:** master creates save state and runs the script
+
+### Step 3b — Wild Encounter Farming (future)
 
 **States:**
 1. **NAVIGATE** — walk through encounter grass, avoid obstacles, use Repel if active
@@ -77,15 +87,6 @@ Deterministic state machine. No LLM calls on the hot path.
 4. **SHINY_ACTION** — if shiny: save state, throw balls. If not: RUN
 5. **HEAL_CHECK** — monitor party HP, return to nearest Pokecenter when low
 6. **BOX_CHECK** — monitor party/box capacity, deposit if needed
-
-- [ ] Design state machine in `farm.py`
-- [ ] Implement tick-driven loop (no async, no events)
-- [ ] Implement NAVIGATE: patrol a route with encounter grass
-- [ ] Implement ENCOUNTER_WAIT: detect battle start from RAM
-- [ ] Implement SHINY_CHECK: call into detect_shiny.py
-- [ ] Implement SHINY_ACTION: throw balls if shiny, Run if not
-- [ ] Implement HEAL_CHECK: track party HP across encounters
-- [ ] Add action logging (timestamp, encounter count, shiny found)
 
 ---
 
