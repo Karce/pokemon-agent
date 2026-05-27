@@ -19,6 +19,7 @@ Run with the project venv active:
 from __future__ import annotations
 
 import sys
+import signal
 import time
 from pathlib import Path
 
@@ -134,6 +135,16 @@ ADDR_SVBK = 0xFF70
 # a run-level seed, attempt 1 of every run produced identical DVs.
 # Seeding from time_ns() gives each run a different RNG starting point.
 RUN_SEED = time.time_ns() & 0xFFFF
+SHOULD_EXIT = False
+
+
+def _signal_handler(sig: int, _frame) -> None:
+    global SHOULD_EXIT
+    if SHOULD_EXIT:
+        print("\nForced exit.", file=sys.stderr)
+        sys.exit(1)
+    print("\nSIGINT received — waiting for current attempt to finish...", file=sys.stderr)
+    SHOULD_EXIT = True
 
 
 def main() -> int:
@@ -177,13 +188,13 @@ def main() -> int:
     total_frames = [0]
     start_time = time.monotonic()
 
-    seen_dvs: dict[tuple[int, int, int, int], int] = {}
-
     # -- low-level helpers --------------------------------------------------
 
     def tick(n: int = 1) -> None:
         # render=False saves the screen rendering work in headless mode
         for _ in range(n):
+            if SHOULD_EXIT:
+                raise KeyboardInterrupt()
             if not pyboy.tick(render=False):
                 sys.exit(0)
             frame_count[0] += 1
@@ -407,8 +418,11 @@ def main() -> int:
     # -- main loop ----------------------------------------------------------
 
     attempt = 0
+    signal.signal(signal.SIGINT, _signal_handler)
     try:
         while True:
+            if SHOULD_EXIT:
+                break
             attempt += 1
             frame_count[0] = 0
             load_state()
@@ -464,16 +478,6 @@ def main() -> int:
             # bail here and skip ~2350 frames of dialog/nickname work
             # per attempt.
             species, dvs = slot0_species_and_dvs()
-            dvs_tuple = (dvs.attack, dvs.defense, dvs.speed, dvs.special)
-            prev_attempt = seen_dvs.get(dvs_tuple)
-            if prev_attempt is None:
-                seen_dvs[dvs_tuple] = attempt
-            else:
-                print(
-                    f"  ⚠ RNG REPEAT: (ATK={dvs.attack}, DEF={dvs.defense}, "
-                    f"SPD={dvs.speed}, SPC={dvs.special}) "
-                    f"first seen at attempt {prev_attempt}, now at attempt {attempt}"
-                )
             shiny = is_shiny(dvs)
             atk_ok = MIN_ATK_DV <= dvs.attack <= MAX_ATK_DV
             target = shiny and atk_ok
@@ -577,7 +581,8 @@ def main() -> int:
             else:
                 print("Window stays open.  Close it (or Ctrl+C) to exit.")
                 while pyboy.tick():
-                    pass
+                    if SHOULD_EXIT:
+                        break
             return 0
 
     except KeyboardInterrupt:
