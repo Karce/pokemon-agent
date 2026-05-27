@@ -1,14 +1,11 @@
 """Pokemon Gold shiny-starter farm for Totodile.
 
 Repeatedly loads a save state placed in front of Prof Elm's starter
-Pokeballs, picks Totodile, advances through the FULL dialog sequence
-INCLUDING the nickname keyboard (typing "KIWI" every attempt), reads
-party-slot-0 DVs, and either halts on a shiny or reloads and retries.
-
-Why type the nickname on non-shiny attempts too?  We want a single,
-well-defined dialog flow that always ends in the same overworld
-state — easier to reason about than branching "if shiny do A, else
-do B".
+Pokeballs, picks Totodile, and reads party-slot-0 DVs the instant the
+party fills.  On non-shiny attempts we reload immediately — no nickname
+typing, no Elm follow-up dialog — saving ~2350 frames vs. running the
+full sequence every loop.  Only on a shiny do we advance the rest of
+the dialog, type "KIWI", and snapshot the state.
 
 What actually changes DVs between attempts is mix_rng() — see its
 docstring.  Idle frame ticks do NOT advance Gen-2's RNG; only
@@ -392,6 +389,35 @@ def main() -> int:
             if DUMP_MEMORY:
                 dump_diagnostic("party_count > 0")
 
+            # Early DV check — party slot 0 (species + DVs) is finalised
+            # the instant party_count flips to 1, well before Elm's
+            # "received TOTODILE!" dialog finishes.  On a non-shiny we
+            # bail here and skip ~2350 frames of dialog/nickname work
+            # per attempt.
+            species, dvs = slot0_species_and_dvs()
+            shiny = is_shiny(dvs)
+            species_name = SPECIES_NAMES.get(species, f"???({species})")
+
+            print(
+                f"[{attempt:>4}] {species_name:>10}  "
+                f"ATK={dvs.attack:2d} DEF={dvs.defense:2d} "
+                f"SPD={dvs.speed:2d} SPC={dvs.special:2d}  "
+                f"{'*** SHINY ***' if shiny else 'not shiny'}"
+            )
+
+            if species != TOTODILE_ID:
+                print(
+                    f"  └─ wrong species; expected Totodile ({TOTODILE_ID})",
+                    file=sys.stderr,
+                )
+                continue
+
+            if not shiny:
+                continue
+
+            # ── Shiny found — finish the dialog so the saved state is
+            # in a clean, post-nickname overworld position. ──────────
+
             # Phase 2: advance past the cry / "received TOTODILE" text
             # and Elm flavor lines, then press YES on the nickname Y/N
             # menu so the keyboard opens.  Exactly PRESSES_PARTY_TO_KEYBOARD
@@ -423,31 +449,8 @@ def main() -> int:
                     )
                 press_a_when_ready()
 
-            # Phase 5: read what we got.
-            species, dvs = slot0_species_and_dvs()
             nick = slot0_nickname()
-            shiny = is_shiny(dvs)
-            species_name = SPECIES_NAMES.get(species, f"???({species})")
 
-            print(
-                f"[{attempt:>4}] {species_name:>10}  "
-                f"nick={nick!r:<14} "
-                f"ATK={dvs.attack:2d} DEF={dvs.defense:2d} "
-                f"SPD={dvs.speed:2d} SPC={dvs.special:2d}  "
-                f"{'*** SHINY ***' if shiny else 'not shiny'}"
-            )
-
-            if species != TOTODILE_ID:
-                print(
-                    f"  └─ wrong species; expected Totodile ({TOTODILE_ID})",
-                    file=sys.stderr,
-                )
-                continue
-
-            if not shiny:
-                continue
-
-            # ── Shiny found ───────────────────────────────────────────
             print()
             print("=" * 60)
             print(f"  ✨  SHINY TOTODILE  ✨   on attempt {attempt}")
